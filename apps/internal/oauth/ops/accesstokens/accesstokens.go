@@ -242,13 +242,27 @@ func (c Client) FromRefreshToken(ctx context.Context, appType AppType, authParam
 	if err := addClaims(qv, authParams); err != nil {
 		return TokenResponse{}, err
 	}
+	var poPKey PoPKey
+	if authParams.PopToken {
+		qv.Set("token_type", "pop")
+		poPKey = GetSwPoPKey()
+		qv.Set("req_cnf", poPKey.ReqCnf())
+	}
+	qv.Set("req_cnf", poPKey.ReqCnf())
 	qv.Set(grantType, grant.RefreshToken)
 	qv.Set(clientID, authParams.ClientID)
 	qv.Set(clientInfo, clientInfoVal)
 	qv.Set("refresh_token", refreshToken)
 	addScopeQueryParam(qv, authParams)
 
-	return c.doTokenResp(ctx, authParams, qv)
+	token, err := c.doTokenResp(ctx, authParams, qv)
+	if err != nil {
+		return token, fmt.Errorf("FromRefreshToken(): %w", err)
+	}
+	if authParams.PopToken {
+		token.PoPKey = poPKey
+	}
+	return token, nil
 }
 
 // FromClientSecret uses a client's secret (aka password) to get a new token.
@@ -274,6 +288,12 @@ func (c Client) FromAssertion(ctx context.Context, authParameters authority.Auth
 	if err := addClaims(qv, authParameters); err != nil {
 		return TokenResponse{}, err
 	}
+	var poPKey PoPKey
+	if authParameters.PopToken {
+		qv.Set("token_type", "pop")
+		poPKey = GetSwPoPKey()
+		qv.Set("req_cnf", poPKey.ReqCnf())
+	}
 	qv.Set(grantType, grant.ClientCredential)
 	qv.Set("client_assertion_type", grant.ClientAssertion)
 	qv.Set("client_assertion", assertion)
@@ -284,6 +304,9 @@ func (c Client) FromAssertion(ctx context.Context, authParameters authority.Auth
 	token, err := c.doTokenResp(ctx, authParameters, qv)
 	if err != nil {
 		return token, fmt.Errorf("FromAssertion(): %w", err)
+	}
+	if authParameters.PopToken {
+		token.PoPKey = poPKey
 	}
 	return token, nil
 }

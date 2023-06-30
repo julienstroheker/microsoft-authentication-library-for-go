@@ -38,6 +38,8 @@ type TokenResponse struct {
 	IDToken      IDToken // *Credential
 	AccessToken  AccessToken
 	Account      shared.Account
+	// Not implemented yet
+	PopKey accesstokens.PoPKey
 }
 
 // Manager is an in-memory cache of access tokens, accounts and meta data. This data is

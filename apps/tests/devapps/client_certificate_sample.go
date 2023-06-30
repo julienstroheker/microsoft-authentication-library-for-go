@@ -34,14 +34,18 @@ func acquireTokenClientCertificate() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	result, err := app.AcquireTokenSilent(context.Background(), config.Scopes)
+	result, err := app.AcquireTokenSilent(context.Background(), config.Scopes, confidential.WithPopToken())
 	if err != nil {
-		result, err = app.AcquireTokenByCredential(context.Background(), config.Scopes)
+		fmt.Println("Failed to acquire token silently")
+		result, err = app.AcquireTokenByCredential(context.Background(), config.Scopes, confidential.WithPopToken())
 		if err != nil {
 			log.Fatal(err)
 		}
 		fmt.Println("Access Token Is " + result.AccessToken)
-		return
 	}
-	fmt.Println("Silently acquired token " + result.AccessToken)
+	pop, err := result.AcquirePoPTokenForHost("foo")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("pop " + pop)
 }

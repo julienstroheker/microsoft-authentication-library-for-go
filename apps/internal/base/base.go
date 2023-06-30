@@ -5,6 +5,8 @@ package base
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/url"
@@ -19,6 +21,7 @@ import (
 	"github.com/AzureAD/microsoft-authentication-library-for-go/apps/internal/oauth/ops/accesstokens"
 	"github.com/AzureAD/microsoft-authentication-library-for-go/apps/internal/oauth/ops/authority"
 	"github.com/AzureAD/microsoft-authentication-library-for-go/apps/internal/shared"
+	"github.com/google/uuid"
 )
 
 const (
@@ -54,6 +57,7 @@ type AcquireTokenSilentParameters struct {
 	UserAssertion     string
 	AuthorizationType authority.AuthorizeType
 	Claims            string
+	PopToken          bool
 }
 
 // AcquireTokenAuthCodeParameters contains the parameters required to acquire an access token using the auth code flow.
@@ -85,9 +89,32 @@ type AuthResult struct {
 	Account        shared.Account
 	IDToken        accesstokens.IDToken
 	AccessToken    string
+	PoPKey         accesstokens.PoPKey
 	ExpiresOn      time.Time
 	GrantedScopes  []string
 	DeclinedScopes []string
+}
+
+func (ar AuthResult) AcquirePoPTokenForHost(host string) (string, error) {
+	if ar.PoPKey == nil {
+		return "", errors.New("token does not support pop semantics")
+	}
+
+	ts := time.Now().Unix()
+	nonce := uuid.New().String()
+	nonce = strings.Replace(nonce, "-", "", -1)
+	header := fmt.Sprintf(`{"typ":"pop","alg":"%s","kid":"%s"}`, ar.PoPKey.Alg(), ar.PoPKey.KeyID())
+	headerB64 := base64.RawURLEncoding.EncodeToString([]byte(header))
+	payload := fmt.Sprintf(`{"at":"%s","ts":%d,"u":"%s","cnf":{"jwk":%s},"nonce":"%s"}`, ar.AccessToken, ts, host, ar.PoPKey.JWK(), nonce)
+	payloadB64 := base64.RawURLEncoding.EncodeToString([]byte(payload))
+	h256 := sha256.Sum256([]byte(headerB64 + "." + payloadB64))
+	signature, err := ar.PoPKey.Sign(h256[:])
+	if err != nil {
+		return "", err
+	}
+	signatureB64 := base64.RawURLEncoding.EncodeToString(signature)
+
+	return headerB64 + "." + payloadB64 + "." + signatureB64, nil
 }
 
 // AuthResultFromStorage creates an AuthResult from a storage token response (which is generated from the cache).
@@ -99,7 +126,7 @@ func AuthResultFromStorage(storageTokenResponse storage.TokenResponse) (AuthResu
 	account := storageTokenResponse.Account
 	accessToken := storageTokenResponse.AccessToken.Secret
 	grantedScopes := strings.Split(storageTokenResponse.AccessToken.Scopes, scopeSeparator)
-
+	popKey := storageTokenResponse.PopKey
 	// Checking if there was an ID token in the cache; this will throw an error in the case of confidential client applications.
 	var idToken accesstokens.IDToken
 	if !storageTokenResponse.IDToken.IsZero() {
@@ -108,7 +135,7 @@ func AuthResultFromStorage(storageTokenResponse storage.TokenResponse) (AuthResu
 			return AuthResult{}, fmt.Errorf("problem decoding JWT token: %w", err)
 		}
 	}
-	return AuthResult{account, idToken, accessToken, storageTokenResponse.AccessToken.ExpiresOn.T, grantedScopes, nil}, nil
+	return AuthResult{account, idToken, accessToken, popKey, storageTokenResponse.AccessToken.ExpiresOn.T, grantedScopes, nil}, nil
 }
 
 // NewAuthResult creates an AuthResult.
@@ -122,6 +149,7 @@ func NewAuthResult(tokenResponse accesstokens.TokenResponse, account shared.Acco
 		AccessToken:   tokenResponse.AccessToken,
 		ExpiresOn:     tokenResponse.ExpiresOn.T,
 		GrantedScopes: tokenResponse.GrantedScopes.Slice,
+		PoPKey:        tokenResponse.PoPKey,
 	}, nil
 }
 
@@ -171,6 +199,13 @@ func WithKnownAuthorityHosts(hosts []string) Option {
 		cp := make([]string, len(hosts))
 		copy(cp, hosts)
 		c.AuthParams.KnownAuthorityHosts = cp
+		return nil
+	}
+}
+
+func WithPopToken() Option {
+	return func(c *Client) error {
+		c.AuthParams.PopToken = true
 		return nil
 	}
 }
@@ -289,6 +324,7 @@ func (b Client) AcquireTokenSilent(ctx context.Context, silent AcquireTokenSilen
 	authParams.AuthorizationType = silent.AuthorizationType
 	authParams.Claims = silent.Claims
 	authParams.UserAssertion = silent.UserAssertion
+	authParams.PopToken = silent.PopToken
 
 	m := b.pmanager
 	if authParams.AuthorizationType != authority.ATOnBehalfOf {
